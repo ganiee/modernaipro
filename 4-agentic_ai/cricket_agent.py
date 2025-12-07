@@ -1,7 +1,7 @@
 
 """
-Cricket Intelligence Agent - Men T20 & ODI Matches (Tasks 1 & 2)
-Similar to sports_agent.py, but focused on men's T20 and ODI cricket worldwide.
+Cricket Intelligence Agent - T20, ODI & Test (Men & Women)
+Provides live odds, news aggregation, and AI-driven analysis for men's and women's cricket formats.
 """
 
 import streamlit as st
@@ -34,37 +34,74 @@ ANALYST_PERSONAS = {
 
 @st.cache_data(ttl=300)
 def get_cricket_events(format_key):
-    """Fetch men's cricket events from The Odds API for given format (t20 or odi)"""
-    format_map = {
-        "T20": "cricket_international_t20",
-        "ODI": "cricket_test_match",  # No ODI odds, using Test Matches as closest available
-        "Test": "cricket_test_match"
+    """Fetch cricket events (men's and women's) from The Odds API for a given format.
+
+    The Odds API may use different sport keys for women's competitions depending on provider
+    or API version. Try a list of candidate sport keys for the requested format and return
+    the first non-empty successful response.
+    """
+    if not ODDS_API_KEY or not ODDS_BASE_URL:
+        print("[DEBUG] ODDS_API_KEY or ODDS_BASE_URL not configured.")
+        return []
+
+    candidates = {
+        "T20": ["cricket_international_t20", "cricket_t20_men", "cricket_t20"],
+        "Women T20": [
+            "cricket_womens_t20",
+            "cricket_women_t20",
+            "cricket_international_women_t20",
+            "cricket_t20_women",
+            "cricket_t20_womens",
+            # Fallback to general T20 keys when a women-specific sport key isn't available
+            "cricket_international_t20",
+            "cricket_t20_men",
+            "cricket_t20"
+        ],
+        "ODI": ["cricket_odi", "cricket_international_odi", "cricket_test_match"],
+        "Test": ["cricket_test_match"]
     }
-    sport_key = format_map.get(format_key, "cricket_t20_men")
-    url = f"{ODDS_BASE_URL}/sports/{sport_key}/odds/"
+
+    keys_to_try = candidates.get(format_key, ["cricket_international_t20"]) 
     params = {
         "apiKey": ODDS_API_KEY,
         "regions": "us,uk,eu,au",
         "markets": "h2h,spreads,totals",
         "oddsFormat": "decimal"
     }
-    response = requests.get(url, params=params)
-    # Debug logging
-    print(f"[DEBUG] Requesting: {url}")
-    print(f"[DEBUG] Params: {params}")
-    print(f"[DEBUG] Status Code: {response.status_code}")
-    try:
-        print(f"[DEBUG] Response: {response.text[:500]}")
-    except Exception as e:
-        print(f"[DEBUG] Error printing response: {e}")
-    if response.status_code == 200:
-        data = response.json()
-        if not data:
-            print("[DEBUG] No events returned from API.")
-        return data
-    else:
-        print(f"[DEBUG] API Error: {response.status_code} - {response.text}")
-    return []
+
+    for sport_key in keys_to_try:
+        url = f"{ODDS_BASE_URL}/sports/{sport_key}/odds/"
+        try:
+            print(f"[DEBUG] Trying sport key: {sport_key}")
+            response = requests.get(url, params=params, timeout=10)
+        except Exception as e:
+            print(f"[DEBUG] Request exception for {sport_key}: {e}")
+            continue
+
+        print(f"[DEBUG] Requesting: {url}")
+        print(f"[DEBUG] Params: {params}")
+        print(f"[DEBUG] Status Code: {response.status_code}")
+        try:
+            print(f"[DEBUG] Response (truncated): {response.text[:500]}")
+        except Exception as e:
+            print(f"[DEBUG] Error printing response: {e}")
+
+        if response.status_code == 200:
+            try:
+                data = response.json()
+            except Exception as e:
+                print(f"[DEBUG] JSON decode error for {sport_key}: {e}")
+                continue
+            if data:
+                print(f"[DEBUG] Returning data for sport key: {sport_key}")
+                return {"sport_key": sport_key, "events": data}
+            else:
+                print(f"[DEBUG] Empty data for sport key: {sport_key}")
+        else:
+            print(f"[DEBUG] API Error for {sport_key}: {response.status_code} - {getattr(response, 'text', '')}")
+
+    print("[DEBUG] No events found for any candidate sport key.")
+    return {"sport_key": None, "events": []}
 
 @st.cache_data(ttl=60)
 def get_news(query, max_results=5):
@@ -96,22 +133,45 @@ def analyze_with_llm(prompt):
     except Exception as e:
         return f"LLM Error: {e}"
 
+
+def is_womens_event(event: dict) -> bool:
+    """Heuristic to detect whether an event pertains to a women's match.
+
+    Checks `sport_title` for 'women' and looks for 'women' markers in team names.
+    This is best-effort and may miss cases where providers don't label gender.
+    """
+    try:
+        sport_title = (event.get("sport_title") or "").lower()
+        if "women" in sport_title:
+            return True
+        # Check team names for common markers
+        for team in (event.get("home_team", ""), event.get("away_team", "")):
+            t = team.lower()
+            if "women" in t or "women's" in t or "womens" in t:
+                return True
+            # common suffix like 'W' (e.g., 'India Women' sometimes 'India W')
+            if t.endswith(" w") or t.endswith(" women") or t.endswith(" women\""):
+                return True
+        return False
+    except Exception:
+        return False
+
 # ============== STREAMLIT UI ==============
 
 
 def main():
     st.set_page_config(
-        page_title="Cricket Intelligence Agent (Men T20 & ODI)",
+        page_title="Cricket Intelligence Agent (T20, ODI & Test — Men & Women)",
         page_icon="🏏",
         layout="wide"
     )
-    st.title("🏏 Cricket Intelligence Agent - Men T20 & ODI")
-    st.caption("Live odds + News + AI Analysis for men's T20 and ODI cricket worldwide")
+    st.title("🏏 Cricket Intelligence Agent - T20, ODI & Test (Men & Women)")
+    st.caption("Live odds + News + AI Analysis for men's and women's cricket worldwide")
 
     # Sidebar
     with st.sidebar:
         st.header("⚙️ Configuration")
-        format_key = st.selectbox("Select Format", ["T20", "ODI", "Test"], index=0)
+        format_key = st.selectbox("Select Format", ["T20", "Women T20", "ODI", "Test"], index=0)
         persona = st.selectbox("Select Analyst Persona", list(ANALYST_PERSONAS.keys()))
         custom_persona = st.text_area("Or create custom persona", placeholder="You are a cricket expert...", height=80)
 
@@ -120,9 +180,22 @@ def main():
 
     # Tab 1: Live Odds
     with tab1:
-        st.header(f"Live Odds: Men's {format_key} Cricket")
+        st.header(f"Live Odds: {format_key} Cricket")
         with st.spinner(f"Fetching {format_key} events..."):
-            events = get_cricket_events(format_key)
+            result = get_cricket_events(format_key)
+        sport_key_used = result.get("sport_key")
+        events = result.get("events", [])
+
+        # If user requested Women T20, apply heuristic filter to try to keep only women's matches
+        if format_key == "Women T20":
+            filtered = [e for e in events if is_womens_event(e)]
+            # Show note when filtering applied
+            if filtered:
+                st.caption(f"Filtering applied: showing {len(filtered)} events detected as women's matches (sport_key: {sport_key_used})")
+                events = filtered
+            else:
+                st.caption(f"No explicit women's labels found — showing all events from sport_key: {sport_key_used}")
+
         if events:
             st.success(f"Found {len(events)} upcoming matches")
             for event in events[:10]:
@@ -165,7 +238,7 @@ def main():
                 prompt = f"""
 {active_persona}
 
-Analyze this upcoming men's {format_key} match: {selected_match}
+Analyze this upcoming {format_key} match: {selected_match}
 Game Time: {selected_event['commence_time']}
 
 CURRENT BETTING ODDS:
@@ -202,6 +275,14 @@ Be specific and reference the actual news/odds data provided.
             if events:
                 st.write(f"- Bookmakers: {len(events[0].get('bookmakers', []))}")
                 st.write(f"- Markets available: {[m['key'] for m in events[0].get('bookmakers', [{}])[0].get('markets', [])]}")
+        else:
+            st.info("No data loaded.")
+
+        # Show which sport key was used for the last fetch
+        try:
+            st.caption(f"Sport key used for last fetch: {sport_key_used}")
+        except Exception:
+            pass
         else:
             st.info("No data loaded.")
 
